@@ -52,7 +52,7 @@ so the above can more concisely be written:
     def poll_for_message(queue)
         return queue.get()
 
-More simply, function which continues polling every second until it
+More simply, a function which continues polling every second until it
 gets a non falsey result could be defined like like this:
 
     @backoff.on_predicate(backoff.constant, interval=1)
@@ -89,6 +89,37 @@ raised. If you would instead like to log any type of retry, you can
 instead set the logger level to INFO:
 
     logging.getLogger('backoff').setLevel(logging.INFO)
+
+### Event handlers
+
+The backoff decorators optionally take up to three event handler
+functions as keyword arguments: on_success, on_backoff, and on_giveup.
+This may be useful in reporting statistics or perhaps in creating a
+custom logger. Here's an example of using event handler to log
+statsd statistics for each event type
+
+    import statsd
+
+    def success_stat(invoc, tries):
+        f, args, kwargs = invoc
+        statsd.statsd.histogram("backoff.success.%s" % f.name, tries)
+
+    def backoff_stat(invoc, wait, e):
+        f, args, kwargs = invoc
+        statsd.statsd.histogram("backoff.retry.%s" % f.name, wait)
+
+    def giveup_stat(invoc, tries, e):
+        f, args, kwargs = invoc
+        statsd.statsd.histogram("backoff.giveup.%s" % f.name, tries)
+
+    @backoff.on_exception(backoff.expo,
+                          requests.exceptions.RequestException,
+                          max_tries=8,
+                          on_success=success_stat,
+                          on_backoff=backoff_stat,
+                          on_giveup=giveup_stat)
+    def get_url(url):
+        return requests.get(url)
 """
 from __future__ import unicode_literals
 
@@ -176,6 +207,9 @@ def on_predicate(wait_gen,
                  predicate=operator.not_,
                  max_tries=None,
                  jitter=random.random,
+                 on_success=None,
+                 on_backoff=None,
+                 on_giveup=None,
                  **wait_gen_kwargs):
     """Returns decorator for pluggable backoff triggered by predicate.
 
@@ -195,6 +229,12 @@ def on_predicate(wait_gen,
             random function, this staggers wait times a random number
             of milliseconds to help spread out load in the case that
             there are multiple simultaneous retries occuring.
+        on_success: Function with signature (invoc, tries), called
+            in the event of a successful invocation of the target.
+        on_backoff: Function with signature (invoc, wait, cause)
+            called in the event of a backoff.
+        on_giveup: Function with signature (invoc, tries, cause)
+            called in the event that max_tries is exceeded.
         **wait_gen_kwargs: Any additional keyword args specified will be passed
             to the wait_gen when it is initialized.
     """
@@ -203,7 +243,7 @@ def on_predicate(wait_gen,
         @functools.wraps(target)
         def retry(*args, **kwargs):
             # format function invocation to be made for logging
-            invoc = _invoc_repr(target, args, kwargs)
+            invoc = target, args, kwargs
 
             tries = 0
             wait = wait_gen(**wait_gen_kwargs)
@@ -213,15 +253,25 @@ def on_predicate(wait_gen,
                     tries += 1
                     if tries == max_tries:
                         logger.error("Giving up %s after %s tries" %
-                                     (invoc, tries))
+                                     (_invoc_repr(*invoc), tries))
+
+                        if on_giveup is not None:
+                            on_giveup(invoc, tries, ret)
 
                     seconds = next(wait) + jitter()
                     logger.info("Backing off %s: %.1fs" %
-                                (invoc, round(seconds, 1)))
+                                (_invoc_repr(*invoc), round(seconds, 1)))
+
+                    if on_backoff is not None:
+                        on_backoff(invoc, seconds, ret)
+
                     time.sleep(seconds)
                     continue
                 else:
                     break
+
+            if on_success is not None:
+                on_success(invoc, tries)
 
             return ret
 
@@ -235,6 +285,9 @@ def on_exception(wait_gen,
                  exception,
                  max_tries=None,
                  jitter=random.random,
+                 on_success=None,
+                 on_backoff=None,
+                 on_giveup=None,
                  **wait_gen_kwargs):
     """Returns decorator for pluggable backoff triggered by exception.
 
@@ -251,6 +304,12 @@ def on_exception(wait_gen,
             random function, this staggers wait times a random number
             of milliseconds to help spread out load in the case that
             there are multiple simultaneous retries occuring.
+        on_success: Function with signature (invoc, tries), called
+            in the event of a successful invocation of the target.
+        on_backoff: Function with signature (invoc, wait, cause)
+            called in the event of a backoff.
+        on_giveup: Function with signature (invoc, tries, cause)
+            called in the event that max_tries is exceeded.
         **wait_gen_kwargs: Any additional keyword args specified will be
             passed to the wait_generator when it is initialized.
 
@@ -272,13 +331,24 @@ def on_exception(wait_gen,
                     if tries == max_tries:
                         logger.error("Giving up %s after %s tries: %s" %
                                      (invoc, tries, e))
+
+                        if on_giveup is not None:
+                            on_giveup(invoc, tries, e)
+
                         raise
 
                     seconds = next(wait) + jitter()
                     logger.error("Backing off %s %.1fs for exception: %s" %
                                  (invoc, round(seconds, 1), e))
+
+                    if on_backoff is not None:
+                        on_backoff(invoc, seconds, e)
+
                     time.sleep(seconds)
                 else:
+                    if on_success is not None:
+                        on_success(invoc, tries)
+
                     return ret
 
         return retry

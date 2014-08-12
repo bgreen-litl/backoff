@@ -54,7 +54,7 @@ so the above can more concisely be written:
     def poll_for_message(queue)
         return queue.get()
 
-More simply, function which continues polling every second until it
+More simply, a function which continues polling every second until it
 gets a non falsey result could be defined like like this:
 
     @backoff.on_predicate(backoff.constant, interval=1)
@@ -91,4 +91,35 @@ raised. If you would instead like to log any type of retry, you can
 instead set the logger level to INFO:
 
     logging.getLogger('backoff').setLevel(logging.INFO)
+
+### Event handlers
+
+The backoff decorators optionally take up to three event handler
+functions as keyword arguments: on_success, on_backoff, and on_giveup.
+This may be useful in reporting statistics or perhaps in creating a
+custom logger. Here's an example of using event handler to log
+statsd statistics for each event type
+
+    import statsd
+
+    def success_stat(invoc, tries):
+        f, args, kwargs = invoc
+        statsd.statsd.histogram("backoff.success.%s" % f.name, tries)
+
+    def backoff_stat(invoc, wait, e):
+        f, args, kwargs = invoc
+        statsd.statsd.histogram("backoff.retry.%s" % f.name, wait)
+
+    def giveup_stat(invoc, tries, e):
+        f, args, kwargs = invoc
+        statsd.statsd.histogram("backoff.giveup.%s" % f.name, tries)
+
+    @backoff.on_exception(backoff.expo,
+                          requests.exceptions.RequestException,
+                          max_tries=8,
+                          on_success=success_stat,
+                          on_backoff=backoff_stat,
+                          on_giveup=giveup_stat)
+    def get_url(url):
+        return requests.get(url)
 
