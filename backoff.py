@@ -201,6 +201,7 @@ def constant(interval=1):
         yield interval
 
 
+# Formats a function invocation as a unicode string for logging.
 def on_predicate(wait_gen,
                  predicate=operator.not_,
                  max_tries=None,
@@ -370,13 +371,14 @@ def _handlers(hdlr, default=None):
 # Formats a function invocation as a unicode string for logging.
 def _invoc_repr(invoc):
     f, args, kwargs = invoc
-    args_out = ", ".join("%s" % a for a in args)
+    args_out = ", ".join("{}".format(a) for a in args)
     if args and kwargs:
         args_out += ", "
     if kwargs:
-        args_out += ", ".join("%s=%s" % i for i in kwargs.items())
+        args_out += ", ".join("{}={}".format(k, v)
+                              for k, v in kwargs.items())
 
-    return "%s(%s)" % (f.__name__, args_out)
+    return "{}({})".format(f.__name__, args_out)
 
 
 # Default backoff handler
